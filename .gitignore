@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.local
+.env
+.DS_Store
+# agent run artifacts (skills and rules are committed, run logs are not)
+.agents/teamwork_preview_*
+.agents/sentinel_*
