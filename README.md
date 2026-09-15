@@ -2,7 +2,7 @@
 
 **Analyze. Remux. Extract. Compress.** A browser-native media engineering workbench powered by Mediabunny and WebCodecs.
 
-![BrowserFF home](docs/screenshot-home.png)
+![BrowserFF home](docs/img/screenshot-home.png)
 
 No backend, no uploads. Drop a file and inspect real containers, copy streams without re-encoding, or transcode locally in the browser.
 
