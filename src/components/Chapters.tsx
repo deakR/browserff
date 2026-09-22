@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import type { Chapter } from '../types';
 import { chaptersFromXml, chaptersToVtt, chaptersToXml, sortChapters } from '../lib/chapters';
-import { downloadBlob } from '../lib/mediabunny/exporter';
-import { formatDuration, uid } from '../lib/format';
+import { saveOutput } from '../lib/folder';
+import { formatDuration, outputFileName, uid } from '../lib/format';
 
 /**
  * Chapter editor. Chapters are project-local: the engine exposes no chapter
@@ -15,6 +15,7 @@ export function ChapterEditor(props: {
   currentTime: number;
   onChange: (c: Chapter[]) => void;
   onSeek: (t: number) => void;
+  sourceName: string | null;
 }) {
   const [importError, setImportError] = useState<string | null>(null);
   const sorted = sortChapters(props.chapters);
@@ -94,14 +95,14 @@ export function ChapterEditor(props: {
           <div className="mt-2 flex flex-col gap-2">
             <button
               disabled={sorted.length === 0}
-              onClick={() => downloadBlob(new Blob([chaptersToXml(sorted)], { type: 'application/xml' }), 'chapters.xml')}
+              onClick={() => { void saveOutput(new Blob([chaptersToXml(sorted)], { type: 'application/xml' }), outputFileName(props.sourceName ?? 'chapters', 'chapters.xml')); }}
               className="rounded border border-zinc-700 px-3 py-1.5 text-left text-[12px] hover:border-zinc-500 disabled:opacity-40"
             >
               chapters.xml <span className="mono block text-[10px] text-zinc-500">MKVToolNix-compatible · use with mkvmerge --chapters</span>
             </button>
             <button
               disabled={sorted.length === 0}
-              onClick={() => downloadBlob(new Blob([chaptersToVtt(sorted, props.duration)], { type: 'text/vtt' }), 'chapters.vtt')}
+              onClick={() => { void saveOutput(new Blob([chaptersToVtt(sorted, props.duration)], { type: 'text/vtt' }), outputFileName(props.sourceName ?? 'chapters', 'chapters.vtt')); }}
               className="rounded border border-zinc-700 px-3 py-1.5 text-left text-[12px] hover:border-zinc-500 disabled:opacity-40"
             >
               chapters.vtt <span className="mono block text-[10px] text-zinc-500">WebVTT cue sheet</span>
@@ -111,9 +112,8 @@ export function ChapterEditor(props: {
         <section className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-3" aria-label="Chapter limits">
           <h3 className="mono text-[10px] tracking-[0.18em] text-zinc-500">LIMITS</h3>
           <p className="mt-1 text-[12px] leading-relaxed text-zinc-400">
-            Mediabunny 1.56.2 exposes no chapter read or write API, so chapters cannot be
-            embedded into muxed output by BrowserFF. They persist with the project and
-            export to formats real tools consume.
+            Chapters are saved with this file&apos;s project in this browser. Mediabunny 1.56.2
+            still cannot embed them in muxed output. Export XML or VTT for external tools.
           </p>
         </section>
       </aside>

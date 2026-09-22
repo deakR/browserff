@@ -27,11 +27,11 @@ Open http://localhost:5173. Best in a Chromium-based browser (full WebCodecs sup
 
 ## Privacy
 
-Local-first: media is processed in the browser and never uploaded. Optional Supabase sync stores metadata only — schema in `supabase/schema.sql`.
+Media is processed in this browser and never uploaded. Project metadata, chapters, and job labels stay in IndexedDB on this device.
 
 ## Stack
 
-React + Vite + TypeScript + Tailwind CSS · Mediabunny · IndexedDB · Supabase (optional)
+React + Vite + TypeScript + Tailwind CSS · Mediabunny · IndexedDB
 
 ## License
 

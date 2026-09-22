@@ -31,7 +31,6 @@ export function CodecsView(props: {
   nativeLoading: boolean;
   extensions: CodecExtensionInfo[];
   onLoadExtension: (id: string) => void;
-  serverUrl: string | null;
 }) {
   const inputs = useMemo(() => {
     try { return inputFormats(); } catch { return []; }
@@ -117,13 +116,10 @@ export function CodecsView(props: {
       <section className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-3" aria-label="Processing mode">
         <h3 className="mono text-[10px] tracking-[0.18em] text-zinc-500">PROCESSING MODE</h3>
         <p className="mono mt-2 text-[11px] text-emerald-300">● LOCAL — active. Source media never leaves this browser.</p>
-        {props.serverUrl
-          ? <p className="mono mt-1 text-[11px] text-amber-300">○ SERVER configured at {props.serverUrl} — used only via explicit action.</p>
-          : <p className="mono mt-1 text-[11px] leading-relaxed text-zinc-500">○ SERVER — not configured. Set VITE_MEDIABUNNY_SERVER_URL to enable optional server processing for files unsuitable locally. Server mode always requires explicit opt-in per job.</p>}
       </section>
 
-      <SystemStatus serverUrl={props.serverUrl} extensions={props.extensions} />
-      <ProcessingPath native={props.native} extensions={props.extensions} serverUrl={props.serverUrl} />
+      <SystemStatus extensions={props.extensions} />
+      <ProcessingPath native={props.native} extensions={props.extensions} />
     </div>
   );
 }
@@ -138,7 +134,7 @@ function browserName(): string {
   return 'Unknown';
 }
 
-function SystemStatus({ serverUrl, extensions }: { serverUrl: string | null; extensions: CodecExtensionInfo[] }) {
+function SystemStatus({ extensions }: { extensions: CodecExtensionInfo[] }) {
   const [storage, setStorage] = useState('checking…');
   useEffect(() => {
     if (navigator.storage?.estimate) {
@@ -158,7 +154,6 @@ function SystemStatus({ serverUrl, extensions }: { serverUrl: string | null; ext
     ['WASM extensions', `${loaded} loaded / ${extensions.length} available`],
     ['Workers', 'Worker' in window ? 'Available' : 'Unavailable'],
     ['Storage', storage],
-    ['Server', serverUrl ?? 'not configured'],
   ];
   return (
     <section className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-3" aria-label="System status">
@@ -185,19 +180,18 @@ const EXT_FOR_CODEC: Record<string, { ext: string; covers: string }> = {
   prores: { ext: 'prores', covers: 'decode only' },
 };
 
-function ProcessingPath({ native, extensions, serverUrl }: { native: MediaCapabilityRow[]; extensions: CodecExtensionInfo[]; serverUrl: string | null }) {
+function ProcessingPath({ native, extensions }: { native: MediaCapabilityRow[]; extensions: CodecExtensionInfo[] }) {
   const codecs = ['avc', 'hevc', 'vp9', 'av1', 'prores', 'aac', 'opus', 'mp3', 'vorbis', 'flac', 'ac3', 'eac3', 'dts'];
   const extState = new Map(extensions.map((e) => [e.id, e.state]));
   return (
     <section className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-3 xl:col-span-2" aria-label="Processing path">
-      <h3 className="mono text-[10px] tracking-[0.18em] text-zinc-500">PROCESSING PATH — NATIVE VS WASM VS SERVER</h3>
+      <h3 className="mono text-[10px] tracking-[0.18em] text-zinc-500">PROCESSING PATH — NATIVE VS WASM</h3>
       <div className="overflow-x-auto">
-        <table className="mono mt-2 w-full min-w-[560px] text-[11px]">
+        <table className="mono mt-2 w-full text-[11px]">
           <thead><tr className="text-left text-zinc-500">
             <th className="py-1 pr-2 font-normal">Codec</th>
             <th className="py-1 pr-2 font-normal">Native</th>
-            <th className="py-1 pr-2 font-normal">WASM extension</th>
-            <th className="py-1 font-normal">Server</th>
+            <th className="py-1 font-normal">WASM extension</th>
           </tr></thead>
           <tbody className="divide-y divide-zinc-800/60">
             {codecs.map((c) => {
@@ -208,19 +202,18 @@ function ProcessingPath({ native, extensions, serverUrl }: { native: MediaCapabi
                 <tr key={c}>
                   <td className="py-1 pr-2 text-zinc-200">{c.toUpperCase()}</td>
                   <td className="py-1 pr-2">{n ? (n.decode || n.encode ? <span className="text-emerald-400">✓ {n.decode && n.encode ? 'dec+enc' : n.decode ? 'dec' : 'enc'}</span> : <span className="text-zinc-600">✗</span>) : <span className="text-zinc-600">?</span>}</td>
-                  <td className="py-1 pr-2">
+                  <td className="py-1">
                     {!ext ? <span className="text-zinc-600">—</span>
                       : loaded ? <span className="text-emerald-300">✓ loaded ({ext.covers})</span>
                       : <span className="text-amber-300/90">available ({ext.covers})</span>}
                   </td>
-                  <td className="py-1">{serverUrl ? <span className="text-amber-300/90">opt-in</span> : <span className="text-zinc-600">—</span>}</td>
                 </tr>
               );
             })}
           </tbody>
         </table>
       </div>
-      <p className="mono mt-1 text-[10px] text-zinc-600">Native column is measured in this browser. Extension availability is per official @mediabunny packages. Server requires explicit configuration and per-job opt-in.</p>
+      <p className="mono mt-1 text-[10px] text-zinc-600">Native column is measured in this browser. Extension availability is per official @mediabunny packages.</p>
     </section>
   );
 }

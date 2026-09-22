@@ -1,18 +1,26 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { canEncodeAudio, canEncodeVideo } from 'mediabunny';
 import type {
   CodecExtensionInfo, CompressorMode, JobRecord, MediaMetadata, OperationConfig,
   QualityTier, SourceFileEntry,
 } from '../types';
 import { QUALITY_TIER_VALUE } from '../types';
-import { estimateForConfig, isRemuxOnly, pipelineRows, planFromTargetSize, resolvePreset, smartAnalysis, type PresetId } from '../lib/compress';
+import { estimateForConfig, isRemuxOnly, pipelineRows, planFromTargetSize, previewEnd, resolvePreset, smartAnalysis, type PresetId } from '../lib/compress';
 import { transcodeContainers } from '../lib/codecs';
 import { ffmpegPreview } from '../lib/ffmpeg';
 import { deleteCompressPreset, listCompressPresets, saveCompressPreset } from '../lib/presets';
 import { formatBitrate, formatBytes, formatDuration, formatFps, formatHz, uid } from '../lib/format';
 import { openInput } from '../lib/mediabunny/reader';
 import { extractMetadata } from '../lib/mediabunny/metadata';
+import { runOperation, type RunHandle } from '../lib/mediabunny/transcoder';
 import { jobQueue } from '../lib/jobs';
+import { WipeCompare } from './WipeCompare';
+
+type PreviewState =
+  | { phase: 'idle' }
+  | { phase: 'running'; progress: number }
+  | { phase: 'ready'; url: string }
+  | { phase: 'error'; message: string };
 
 interface Caps {
   video: string[];
@@ -71,6 +79,30 @@ export function Compressor(props: {
   const [jobs, setJobs] = useState<JobRecord[]>([]);
   const [measured, setMeasured] = useState<{ jobId: string; meta: MediaMetadata; size: number; ms: number } | null>(null);
   const [view, setView] = useState<'original' | 'compressed' | 'side'>('compressed');
+  const [preview, setPreview] = useState<PreviewState>({ phase: 'idle' });
+  const [split, setSplit] = useState(0.5);
+  const previewRunRef = useRef<RunHandle | null>(null);
+  const previewUrlRef = useRef<string | null>(null);
+
+  const revokePreviewUrl = () => {
+    if (previewUrlRef.current) {
+      URL.revokeObjectURL(previewUrlRef.current);
+      previewUrlRef.current = null;
+    }
+  };
+
+  useEffect(() => {
+    void previewRunRef.current?.cancel();
+    previewRunRef.current = null;
+    revokePreviewUrl();
+    setPreview({ phase: 'idle' });
+    setSplit(0.5);
+  }, [source.id]);
+
+  useEffect(() => () => {
+    void previewRunRef.current?.cancel();
+    revokePreviewUrl();
+  }, []);
 
   useEffect(() => {
     setCapsLoading(true);
@@ -175,6 +207,42 @@ export function Compressor(props: {
     if (!validContainers.includes(container)) return;
     props.onEnqueue(config);
     props.log(`queued compression (${mode}, ${videoCodec}/${effAudioCodec}, ${container})`);
+  };
+
+  const runPreview = () => {
+    if (remuxOnly) return;
+    if (!validContainers.includes(container)) return;
+    if (preview.phase === 'running') return;
+    void previewRunRef.current?.cancel();
+    revokePreviewUrl();
+    setPreview({ phase: 'running', progress: 0 });
+    const handle = runOperation(
+      source.file,
+      { ...config, start: 0, end: previewEnd(meta?.duration ?? null) },
+      (p) => {
+        setPreview((cur) => (cur.phase === 'running' ? { phase: 'running', progress: p.progress } : cur));
+      },
+    );
+    previewRunRef.current = handle;
+    void handle.promise.then(
+      (result) => {
+        if (previewRunRef.current !== handle) {
+          URL.revokeObjectURL(result.objectUrl);
+          return;
+        }
+        URL.revokeObjectURL(result.objectUrl);
+        const url = URL.createObjectURL(result.blob);
+        previewUrlRef.current = url;
+        setPreview({ phase: 'ready', url });
+      },
+      (e: unknown) => {
+        if (previewRunRef.current !== handle) return;
+        if (e instanceof Error && (e.name === 'ConversionCanceledError' || e.message.toLowerCase().includes('cancel'))) {
+          return;
+        }
+        setPreview({ phase: 'error', message: e instanceof Error ? e.message : 'Preview failed' });
+      },
+    );
   };
 
   const applySavedConfig = (c: OperationConfig) => {
@@ -451,10 +519,26 @@ export function Compressor(props: {
           <button onClick={enqueue} disabled={remuxOnly || !validContainers.includes(container)} className="rounded bg-red-600 px-4 py-1.5 text-[12px] font-medium text-white hover:bg-red-500 disabled:opacity-40">
             Queue compression job
           </button>
+          <button
+            onClick={runPreview}
+            disabled={remuxOnly || !validContainers.includes(container) || preview.phase === 'running'}
+            className="rounded border border-zinc-700 px-3 py-1.5 text-[12px] hover:border-zinc-500 disabled:opacity-40"
+          >
+            Preview 5s
+          </button>
           <button onClick={enqueueBenchmark} className="rounded border border-zinc-700 px-3 py-1.5 text-[12px] hover:border-zinc-500">
             Benchmark 3 presets
           </button>
         </div>
+        {preview.phase === 'running' && (
+          <p className="mono mt-2 text-[11px] text-zinc-400">Preview {Math.round(preview.progress * 100)}%</p>
+        )}
+        {preview.phase === 'error' && (
+          <p role="alert" className="mt-2 text-[12px] text-red-300">{preview.message}</p>
+        )}
+        {preview.phase === 'ready' && (
+          <WipeCompare originalUrl={source.objectUrl} previewUrl={preview.url} split={split} onSplit={setSplit} />
+        )}
         {validContainers.length === 0 && (
           <p role="alert" className="mt-2 text-[12px] text-red-300">No container accepts this codec combination. Change codecs or container.</p>
         )}
@@ -487,7 +571,7 @@ export function Compressor(props: {
       {measured && (
         <section className="rounded-lg border border-emerald-900 bg-emerald-950/20 p-3" aria-label="Measured result">
           <h3 className="mono text-[10px] tracking-[0.18em] text-emerald-400/80">ACTUAL RESULT (MEASURED)</h3>
-          <MeasuredCompare source={source} meta={meta} outMeta={measured.meta} outSize={measured.size} view={view} onView={setView} />
+          <MeasuredCompare source={source} meta={meta} outMeta={measured.meta} outSize={measured.size} jobId={measured.jobId} view={view} onView={setView} />
         </section>
       )}
     </div>
@@ -618,6 +702,7 @@ function MeasuredCompare(props: {
   meta: MediaMetadata;
   outMeta: MediaMetadata;
   outSize: number;
+  jobId: string;
   view: 'original' | 'compressed' | 'side';
   onView: (v: 'original' | 'compressed' | 'side') => void;
 }) {
@@ -643,31 +728,27 @@ function MeasuredCompare(props: {
           <button key={x} onClick={() => props.onView(x)} className={`mono rounded border px-2 py-1 text-[11px] ${props.view === x ? 'border-sky-700 bg-sky-950/40 text-sky-100' : 'border-zinc-700 text-zinc-400'}`}>{x === 'side' ? 'Side by Side' : x[0].toUpperCase() + x.slice(1)}</button>
         ))}
       </div>
-      <CompareVideos source={props.source} outSize={props.outSize} view={props.view} />
+      <CompareVideos source={props.source} jobId={props.jobId} view={props.view} />
     </div>
   );
 }
 
-function CompareVideos({ source, outSize, view }: { source: SourceFileEntry; outSize: number; view: 'original' | 'compressed' | 'side' }) {
+function CompareVideos({ source, jobId, view }: { source: SourceFileEntry; jobId: string; view: 'original' | 'compressed' | 'side' }) {
   const [outUrl, setOutUrl] = useState<string | null>(null);
+  const [sideSplit, setSideSplit] = useState(0.5);
   useEffect(() => {
     let cancelled = false;
-    // Latest completed compressor output for this source size.
     const unsub = jobQueue.subscribe((jobs) => {
-      const hit = jobs.find((j) => j.kind === 'transcode' && j.status === 'completed' && j.outputUrl && j.outputSize === outSize);
+      const hit = jobs.find((j) => j.id === jobId && j.status === 'completed' && j.outputUrl);
       if (hit?.outputUrl && !cancelled) setOutUrl(hit.outputUrl);
     });
     return () => { cancelled = true; unsub(); };
-  }, [outSize]);
+  }, [jobId]);
   if (view === 'side') {
-    return (
-      <div className="mt-2 grid grid-cols-2 gap-2">
-        <video src={source.objectUrl} controls playsInline preload="metadata" className="aspect-video w-full rounded border border-zinc-800 bg-black" />
-        {outUrl
-          ? <video src={outUrl} controls playsInline preload="metadata" className="aspect-video w-full rounded border border-sky-900 bg-black" />
-          : <div className="flex aspect-video items-center justify-center rounded border border-zinc-800 text-[12px] text-zinc-600">compressed preview pending</div>}
-      </div>
-    );
+    if (!outUrl) {
+      return <div className="mt-2 flex aspect-video items-center justify-center rounded border border-zinc-800 text-[12px] text-zinc-600">compressed preview pending</div>;
+    }
+    return <WipeCompare originalUrl={source.objectUrl} previewUrl={outUrl} split={sideSplit} onSplit={setSideSplit} />;
   }
   return (
     <video

@@ -3,7 +3,7 @@ import type {
   Chapter, CodecExtensionInfo, HistoryEntry, JobRecord, MediaCapabilityRow,
   MuxContainer, MuxTrackSelection, OperationConfig, OptimizationRecommendation, PlannedTrack, SourceFileEntry,
 } from './types';
-import { extensionOf, formatBytes, formatDuration, uid } from './lib/format';
+import { extensionOf, formatBytes, formatDuration, outputFileName } from './lib/format';
 import { openInput, describeOpenError } from './lib/mediabunny/reader';
 import { extractMetadata } from './lib/mediabunny/metadata';
 import { countCues, detectSubtitleFormat } from './lib/subtitles';
@@ -16,7 +16,8 @@ import { EXTENSIONS, loadExtension } from './lib/mediabunny/extensions';
 import { extractionTargets, formatExt } from './lib/codecs';
 import { mediaReport } from './lib/report';
 import { jobQueue } from './lib/jobs';
-import { appendHistory, listHistory, listJobs, listProjects, saveJobs, saveProject } from './lib/db';
+import { appendHistory, getFileHandle, getProject, listHistory, listJobs, listProjects, projectKey, saveFileHandle, saveJobs, saveProject } from './lib/db';
+import { canPickFolder, clearFolder, folderHandle, loadFolder, pickFolder, tryWriteGranted } from './lib/folder';
 import { Analyzer, IntegrityPanel, MediaReportPanel, Recommendations, TrackContrib } from './components/Analyzer';
 import { ChapterEditor } from './components/Chapters';
 import { CodecsView, probeCapabilities } from './components/CodecsView';
@@ -98,7 +99,8 @@ export default function App() {
   const [muxContainer, setMuxContainer] = useState<MuxContainer>('mkv');
   const [muxTitle, setMuxTitle] = useState('');
   const [selectedSelKey, setSelectedSelKey] = useState<string | null>(null);
-  const [chapters, setChapters] = useState<Chapter[]>([]);
+  const [chaptersBySource, setChaptersBySource] = useState<Record<string, Chapter[]>>({});
+  const [playheadBySource, setPlayheadBySource] = useState<Record<string, number>>({});
   const [jobs, setJobs] = useState<JobRecord[]>([]);
   const [native, setNative] = useState<MediaCapabilityRow[]>([]);
   const [nativeLoading, setNativeLoading] = useState(true);
@@ -108,18 +110,35 @@ export default function App() {
   const [lines, setLines] = useState<string[]>([]);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [recent, setRecent] = useState<ProjectRecord[]>([]);
+  const [reopenable, setReopenable] = useState<Set<string>>(() => new Set());
   const [loading, setLoading] = useState(false);
   const [homeError, setHomeError] = useState<string | null>(null);
   const [dryRunMsg, setDryRunMsg] = useState<string | null>(null);
   const [muxBusy, setMuxBusy] = useState(false);
+  const [folderName, setFolderName] = useState<string | null>(null);
+  const [folderError, setFolderError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const projectIds = useRef(new Map<string, string>());
+  const sourcesRef = useRef<SourceFileEntry[]>([]);
+  const chaptersRef = useRef<Record<string, Chapter[]>>({});
+  const handleCache = useRef(new Map<string, FileSystemFileHandle>());
+  const projectWrite = useRef(Promise.resolve());
+  const queueProjectSave = useCallback((id: string, build: (prev: ProjectRecord | undefined) => ProjectRecord | undefined) => {
+    projectWrite.current = projectWrite.current.then(async () => {
+      const prev = await getProject(id);
+      const rec = build(prev);
+      if (rec) await saveProject(rec);
+    }).catch(() => undefined);
+  }, []);
+  // requestPermission must be the first await after a click; preload handles at startup.
 
   const log = useCallback((s: string) => {
     setLines((prev) => [...prev.slice(-199), `${new Date().toLocaleTimeString()}  ${s}`]);
   }, []);
 
   const active = useMemo(() => sources.find((s) => s.id === activeId) ?? sources[0] ?? null, [sources, activeId]);
+  const activeChapters = active ? (chaptersBySource[active.id] ?? []) : [];
+
+  useEffect(() => { sourcesRef.current = sources; }, [sources]);
 
   const plan: PlannedTrack[] = useMemo(
     () => (sources.length === 0 ? [] : planMux({ sources, selections, container: muxContainer })),
@@ -128,6 +147,7 @@ export default function App() {
 
   // ---- init: capabilities, jobs, recent ----
   useEffect(() => {
+    void loadFolder().then((h) => setFolderName(h?.name ?? null));
     probeCapabilities([
       { codec: 'avc', video: true }, { codec: 'hevc', video: true },
       { codec: 'vp9', video: true }, { codec: 'av1', video: true },
@@ -137,7 +157,18 @@ export default function App() {
     jobQueue.setPersist(saveJobs);
     listJobs().then((j) => jobQueue.hydrate(j)).catch(() => undefined);
     const unsub = jobQueue.subscribe(setJobs);
-    listProjects().then(setRecent).catch(() => undefined);
+    listProjects().then(async (projects) => {
+      setRecent(projects);
+      const ids = new Set<string>();
+      for (const p of projects) {
+        const h = await getFileHandle(p.id);
+        if (h) {
+          handleCache.current.set(p.id, h);
+          ids.add(p.id);
+        }
+      }
+      setReopenable(ids);
+    }).catch(() => undefined);
     return unsub;
   }, []);
 
@@ -154,7 +185,11 @@ export default function App() {
       try {
         const { blob, size } = await handle.promise;
         const name = muxFileName(p.title, p.container);
-        return { outputUrl: URL.createObjectURL(blob), outputName: name, outputSize: size, detail: `${p.label} → ${name}` };
+        let detail = `${p.label} → ${name}`;
+        try {
+          if (await tryWriteGranted(blob, name)) detail += ' · saved to folder';
+        } catch { /* folder write optional */ }
+        return { outputUrl: URL.createObjectURL(blob), outputName: name, outputSize: size, detail };
       } finally {
         clearInterval(cancelCheck);
       }
@@ -169,8 +204,12 @@ export default function App() {
       try {
         const { blob, size } = await handle.promise;
         const ext = formatExt(p.targetId, p.kind);
-        const name = `extract-${p.kind}${p.trackIndex + 1}.${ext}`;
-        return { outputUrl: URL.createObjectURL(blob), outputName: name, outputSize: size, detail: `${p.label} → ${name}` };
+        const name = outputFileName(p.file.name, `extract-${p.kind}${p.trackIndex + 1}.${ext}`);
+        let detail = `${p.label} → ${name}`;
+        try {
+          if (await tryWriteGranted(blob, name)) detail += ' · saved to folder';
+        } catch { /* folder write optional */ }
+        return { outputUrl: URL.createObjectURL(blob), outputName: name, outputSize: size, detail };
       } catch (e) {
         if (e instanceof Error && /no output|Missing|Unknown/.test(e.message)) {
           throw new Error(`Extraction failed: ${e.message} This container/codec combination may be unsupported.`);
@@ -188,7 +227,12 @@ export default function App() {
         report(0.8);
         const text = mediaReport(p.name, p.size, meta);
         const blob = new Blob([text], { type: 'text/markdown' });
-        return { outputUrl: URL.createObjectURL(blob), outputName: 'media-report.md', outputSize: blob.size, detail: `Analyzed ${p.name}` };
+        const name = outputFileName(p.name, 'media-report.md');
+        let detail = `Analyzed ${p.name}`;
+        try {
+          if (await tryWriteGranted(blob, name)) detail += ' · saved to folder';
+        } catch { /* folder write optional */ }
+        return { outputUrl: URL.createObjectURL(blob), outputName: name, outputSize: blob.size, detail };
       } finally {
         input.dispose();
       }
@@ -201,7 +245,11 @@ export default function App() {
       try {
         const { blob, size } = await handle.promise;
         const name = p.outputName ?? `${p.config.kind}-output.${p.config.container}`;
-        return { outputUrl: URL.createObjectURL(blob), outputName: name, outputSize: size, detail: `${p.label} → ${name}` };
+        let detail = `${p.label} → ${name}`;
+        try {
+          if (await tryWriteGranted(blob, name)) detail += ' · saved to folder';
+        } catch { /* folder write optional */ }
+        return { outputUrl: URL.createObjectURL(blob), outputName: name, outputSize: size, detail };
       } finally {
         clearInterval(cancelCheck);
       }
@@ -214,7 +262,11 @@ export default function App() {
       try {
         const { blob, size } = await handle.promise;
         const name = joinFileName(p.files[0]?.name ?? 'joined', p.config.container);
-        return { outputUrl: URL.createObjectURL(blob), outputName: name, outputSize: size, detail: `${p.label} → ${name}` };
+        let detail = `${p.label} → ${name}`;
+        try {
+          if (await tryWriteGranted(blob, name)) detail += ' · saved to folder';
+        } catch { /* folder write optional */ }
+        return { outputUrl: URL.createObjectURL(blob), outputName: name, outputSize: size, detail };
       } finally {
         clearInterval(cancelCheck);
       }
@@ -222,17 +274,31 @@ export default function App() {
   }, []);
 
   // ---- file intake ----
-  const loadFiles = useCallback(async (files: File[]) => {
-    if (files.length === 0) return;
+  type IntakeItem = { file: File; handle: FileSystemFileHandle | null };
+
+  const loadFiles = useCallback(async (items: Array<File | IntakeItem>) => {
+    const list: IntakeItem[] = items.map((x) => (x instanceof File ? { file: x, handle: null } : x));
+    if (list.length === 0) return;
     setLoading(true);
     setHomeError(null);
-    if (files.length > 1) log(`${files.length} media sources detected → opening in Multiplexer`);
-    for (const file of files) {
-      const id = uid('src');
+    if (list.length > 1) log(`${list.length} media sources detected → opening in Multiplexer`);
+    const openIds = new Set(sourcesRef.current.map((s) => s.id));
+    for (const { file, handle } of list) {
+      const pid = projectKey(file);
+      if (openIds.has(pid)) {
+        setActiveId(pid);
+        continue;
+      }
+      openIds.add(pid);
+      if (handle) {
+        handleCache.current.set(pid, handle);
+        setReopenable((prev) => new Set(prev).add(pid));
+        void saveFileHandle(pid, handle);
+      }
       const url = URL.createObjectURL(file);
-      const entry: SourceFileEntry = { id, file, objectUrl: url, name: file.name, size: file.size, metadata: null, loadError: null, subtitle: null };
+      const entry: SourceFileEntry = { id: pid, file, objectUrl: url, name: file.name, size: file.size, metadata: null, loadError: null, subtitle: null };
       setSources((prev) => [...prev, entry]);
-      setActiveId((prev) => prev ?? id);
+      setActiveId((prev) => prev ?? pid);
       log(`open ${file.name} (${formatBytes(file.size)})`);
       // Subtitle sidecars are text, not media containers.
       if (/\.(srt|vtt)$/i.test(file.name)) {
@@ -240,19 +306,17 @@ export default function App() {
           const text = await file.text();
           const format = detectSubtitleFormat(file.name, text);
           if (!format) throw new Error('Could not recognize this as SRT or WebVTT.');
-          if (format === 'vtt' || true) {
-            const cues = format === 'vtt' ? countCues(text) : -1;
-            setSources((prev) => prev.map((s) => (s.id === id ? { ...s, subtitle: { format, text } } : s)));
-            setSelections((prev) => [...prev, {
-              key: newSelectionId(), sourceId: id, trackIndex: 0, kind: 'subtitle' as const,
-              include: true, order: prev.length > 0 ? Math.max(...prev.map((p) => p.order)) + 1 : 0,
-              nameOverride: null, langOverride: null, defaultOverride: null, forcedOverride: null, convertSubtitle: format === 'srt',
-            }]);
-            log(`subtitle ${file.name}: ${format.toUpperCase()}${cues >= 0 ? `, ~${cues} cues` : ''}`);
-          }
+          const cues = format === 'vtt' ? countCues(text) : -1;
+          setSources((prev) => prev.map((s) => (s.id === pid ? { ...s, subtitle: { format, text } } : s)));
+          setSelections((prev) => [...prev, {
+            key: newSelectionId(), sourceId: pid, trackIndex: 0, kind: 'subtitle' as const,
+            include: true, order: prev.length > 0 ? Math.max(...prev.map((p) => p.order)) + 1 : 0,
+            nameOverride: null, langOverride: null, defaultOverride: null, forcedOverride: null, convertSubtitle: format === 'srt',
+          }]);
+          log(`subtitle ${file.name}: ${format.toUpperCase()}${cues >= 0 ? `, ~${cues} cues` : ''}`);
         } catch (e) {
           const msg = e instanceof Error ? e.message : 'Could not read subtitle file';
-          setSources((prev) => prev.map((s) => (s.id === id ? { ...s, loadError: msg } : s)));
+          setSources((prev) => prev.map((s) => (s.id === pid ? { ...s, loadError: msg } : s)));
           log(`error: ${msg}`);
         }
         continue;
@@ -266,41 +330,142 @@ export default function App() {
         } finally {
           input.dispose();
         }
-        setSources((prev) => prev.map((s) => (s.id === id ? { ...s, metadata: meta } : s)));
+        setSources((prev) => prev.map((s) => (s.id === pid ? { ...s, metadata: meta } : s)));
         log(`parsed ${file.name}: ${meta.container} ${formatDuration(meta.duration)} (${meta.videoTracks.length}v+${meta.audioTracks.length}a)`);
-        const pid = uid('proj');
-        projectIds.current.set(id, pid);
+        const prev = await getProject(pid);
+        const chapters = chaptersRef.current[pid] ?? prev?.chapters ?? [];
+        chaptersRef.current = { ...chaptersRef.current, [pid]: chapters };
+        setChaptersBySource((c) => ({ ...c, [pid]: chapters }));
         const rec: ProjectRecord = {
           id: pid, name: file.name, filename: file.name, size: file.size,
-          duration: meta.duration, container: meta.container, metadata: meta, updatedAt: Date.now(),
+          duration: meta.duration, container: meta.container, metadata: meta,
+          chapters, updatedAt: Date.now(),
         };
-        saveProject(rec).catch(() => undefined);
-        setRecent((prev) => [rec, ...prev].slice(0, 12));
-        listHistory(pid).then(setHistory).catch(() => undefined);
-        setSelections((prev) => {
-          const base = prev.length > 0 ? Math.max(...prev.map((p) => p.order)) + 1 : 0;
+        queueProjectSave(pid, (stored) => ({
+          ...rec,
+          chapters: chaptersRef.current[pid] ?? stored?.chapters ?? [],
+          updatedAt: Date.now(),
+        }));
+        setRecent((r) => [{ ...rec, chapters: chaptersRef.current[pid] ?? chapters }, ...r.filter((x) => x.id !== pid)].slice(0, 12));
+        setSelections((sel) => {
+          const base = sel.length > 0 ? Math.max(...sel.map((p) => p.order)) + 1 : 0;
           const add: MuxTrackSelection[] = [
             ...meta.videoTracks.map((t, i) => ({
-              key: newSelectionId(), sourceId: id, trackIndex: t.index, kind: 'video' as const,
+              key: newSelectionId(), sourceId: pid, trackIndex: t.index, kind: 'video' as const,
               include: true, order: base + i, nameOverride: null, langOverride: null,
               defaultOverride: null, forcedOverride: null, convertSubtitle: false,
             })),
             ...meta.audioTracks.map((t, i) => ({
-              key: newSelectionId(), sourceId: id, trackIndex: t.index, kind: 'audio' as const,
+              key: newSelectionId(), sourceId: pid, trackIndex: t.index, kind: 'audio' as const,
               include: true, order: base + meta.videoTracks.length + i, nameOverride: null, langOverride: null,
               defaultOverride: null, forcedOverride: null, convertSubtitle: false,
             })),
           ];
-          return [...prev, ...add];
+          return [...sel, ...add];
         });
       } catch (e) {
         const msg = describeOpenError(e);
-        setSources((prev) => prev.map((s) => (s.id === id ? { ...s, loadError: msg } : s)));
+        setSources((prev) => prev.map((s) => (s.id === pid ? { ...s, loadError: msg } : s)));
         log(`error: ${msg}`);
       }
     }
     setLoading(false);
-  }, [log]);
+  }, [log, queueProjectSave]);
+
+  const openMedia = useCallback(async (dest?: 'mux' | 'inspect') => {
+    type PickerWindow = Window & {
+      showOpenFilePicker?: (opts: {
+        multiple?: boolean;
+        startIn?: FileSystemHandle;
+        types?: Array<{ description: string; accept: Record<string, string[]> }>;
+      }) => Promise<FileSystemFileHandle[]>;
+    };
+    const w = window as PickerWindow;
+    const aborted = (e: unknown) => (e instanceof DOMException && e.name === 'AbortError')
+      || (!!e && typeof e === 'object' && 'name' in e && (e as { name: string }).name === 'AbortError');
+    const pickerOpts = (startIn?: FileSystemHandle) => ({
+      multiple: true,
+      ...(startIn ? { startIn } : {}),
+      types: [{
+        description: 'Media',
+        accept: {
+          'video/*': ['.mp4', '.webm', '.mkv', '.mov'],
+          'audio/*': ['.mp3', '.aac', '.opus', '.flac', '.ogg', '.wav'],
+          'text/*': ['.srt', '.vtt'],
+        },
+      }],
+    });
+    if (typeof w.showOpenFilePicker === 'function') {
+      try {
+        const startIn = folderHandle() ?? undefined;
+        let handles: FileSystemFileHandle[];
+        try {
+          handles = await w.showOpenFilePicker(pickerOpts(startIn));
+        } catch (e) {
+          if (aborted(e) || !startIn) throw e;
+          handles = await w.showOpenFilePicker(pickerOpts());
+        }
+        const intake = await Promise.all(handles.map(async (h) => ({ file: await h.getFile(), handle: h })));
+        await loadFiles(intake);
+        if (dest) setTool(dest === 'inspect' ? 'inspector' : 'multiplexer');
+      } catch (e) {
+        if (aborted(e)) return;
+        setHomeError(e instanceof Error ? e.message : 'Could not open files');
+      }
+      return;
+    }
+    fileInputRef.current?.click();
+  }, [loadFiles]);
+
+  const onPickFolder = useCallback(async () => {
+    setFolderError(null);
+    try {
+      const handle = await pickFolder();
+      if (handle) setFolderName(handle.name);
+    } catch (e) {
+      setFolderError(e instanceof Error ? e.message : 'Could not set folder');
+    }
+  }, []);
+
+  const onClearFolder = useCallback(async () => {
+    await clearFolder();
+    setFolderName(null);
+  }, []);
+
+  const reopenRecent = useCallback(async (id: string) => {
+    const handle = handleCache.current.get(id);
+    if (!handle) return;
+    try {
+      type HandleWithPerm = FileSystemFileHandle & {
+        requestPermission: (opts: { mode: 'read' }) => Promise<PermissionState>;
+      };
+      const perm = await (handle as HandleWithPerm).requestPermission({ mode: 'read' });
+      if (perm !== 'granted') return;
+      const file = await handle.getFile();
+      await loadFiles([{ file, handle }]);
+      setActiveId(projectKey(file));
+      setTool('inspector');
+    } catch (e) {
+      if (e instanceof DOMException && e.name === 'AbortError') return;
+      setHomeError(e instanceof Error ? e.message : 'Could not reopen file');
+    }
+  }, [loadFiles]);
+
+  useEffect(() => {
+    if (!activeId) return;
+    listHistory(activeId).then(setHistory).catch(() => undefined);
+  }, [activeId]);
+
+  const updateChapters = useCallback((next: Chapter[]) => {
+    if (!active) return;
+    const sid = active.id;
+    chaptersRef.current = { ...chaptersRef.current, [sid]: next };
+    setChaptersBySource((prev) => ({ ...prev, [sid]: next }));
+    queueProjectSave(sid, (prev) => {
+      if (!prev) return undefined;
+      return { ...prev, chapters: chaptersRef.current[sid] ?? next, updatedAt: Date.now() };
+    });
+  }, [active, queueProjectSave]);
 
   const onSample = useCallback(async () => {
     setLoading(true);
@@ -323,6 +488,16 @@ export default function App() {
       return prev.filter((x) => x.id !== id);
     });
     setSelections((prev) => prev.filter((s) => s.sourceId !== id));
+    setChaptersBySource((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    setPlayheadBySource((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
     setActiveId((prev) => (prev === id ? null : prev));
   }, []);
 
@@ -472,7 +647,7 @@ export default function App() {
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'o') {
         e.preventDefault();
-        fileInputRef.current?.click();
+        void openMedia();
       } else if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
         e.preventDefault();
         if (tool === 'multiplexer') enqueueMux();
@@ -487,7 +662,7 @@ export default function App() {
     };
     window.addEventListener('keydown', fn);
     return () => window.removeEventListener('keydown', fn);
-  }, [tool, enqueueMux]);
+  }, [tool, enqueueMux, openMedia]);
 
   const runningJobs = jobs.filter((j) => j.status === 'running').length;
 
@@ -497,14 +672,22 @@ export default function App() {
         <AppBackdrop />
         <div className="relative z-10">
           <Home
-          recent={recent}
-          jobs={jobs}
-          loading={loading}
-          error={homeError}
-          onFiles={(f, dest) => { void loadFiles(f).then(() => setTool(dest === 'inspect' ? 'inspector' : 'multiplexer')); }}
-          onSample={onSample}
-          onNavigate={(t) => setTool(t)}
-          fileInputRef={fileInputRef}
+            recent={recent}
+            jobs={jobs}
+            loading={loading}
+            error={homeError}
+            hasHandle={(id) => reopenable.has(id)}
+            onOpen={(dest) => { void openMedia(dest); }}
+            onReopen={(id) => { void reopenRecent(id); }}
+            onFiles={(f, dest) => { void loadFiles(f).then(() => setTool(dest === 'inspect' ? 'inspector' : 'multiplexer')); }}
+            onSample={onSample}
+            onNavigate={(t) => setTool(t)}
+            fileInputRef={fileInputRef}
+            folderName={folderName}
+            canPickFolder={canPickFolder()}
+            onPickFolder={() => { void onPickFolder(); }}
+            onClearFolder={() => { void onClearFolder(); }}
+            folderError={folderError}
           />
         </div>
       </div>
@@ -542,7 +725,14 @@ export default function App() {
           <span className="mono flex items-center gap-1.5 rounded border border-emerald-900 bg-emerald-950/40 px-2 py-0.5 text-[10px] text-emerald-300">
             <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-400" /> LOCAL
           </span>
-          <button onClick={() => fileInputRef.current?.click()} className="mono rounded border border-zinc-700 px-2 py-1 text-[11px] text-zinc-300 hover:border-zinc-500">
+          <FolderControls
+            name={folderName}
+            canPick={canPickFolder()}
+            onPick={() => { void onPickFolder(); }}
+            onClear={() => { void onClearFolder(); }}
+            error={folderError}
+          />
+          <button onClick={() => { void openMedia(); }} className="mono rounded border border-zinc-700 px-2 py-1 text-[11px] text-zinc-300 hover:border-zinc-500">
             + open <span className="text-zinc-600">⌃O</span>
           </button>
         </div>
@@ -580,8 +770,22 @@ export default function App() {
               </button>
             ))}
           </nav>
+          {sources.length > 0 && (
+            <nav className="mb-2 flex gap-1 overflow-x-auto md:hidden" aria-label="Sources">
+              {sources.map((s) => (
+                <button
+                  key={s.id}
+                  onClick={() => setActiveId(s.id)}
+                  className={`mono max-w-[140px] shrink-0 truncate rounded border px-2 py-1 text-[11px] ${s.id === active?.id ? 'border-zinc-600 bg-zinc-800 text-zinc-100' : 'border-zinc-800 text-zinc-400'}`}
+                  title={s.name}
+                >
+                  {s.name}
+                </button>
+              ))}
+            </nav>
+          )}
           {sources.length === 0 && tool !== 'codecs' && tool !== 'jobs' && (
-            <EmptyState onOpen={() => fileInputRef.current?.click()} />
+            <EmptyState onOpen={() => { void openMedia(); }} />
           )}
           {tool === 'multiplexer' && (
             <Multiplexer
@@ -627,14 +831,27 @@ export default function App() {
               }}
             />
           )}
-          {tool === 'inspector' && (active ? <WorkspaceView source={active} onLog={log} extraMarkers={chapters.map((c) => ({ id: c.id, time: c.start, label: c.title }))} /> : <EmptyState onOpen={() => fileInputRef.current?.click()} />)}
+          {tool === 'inspector' && (active ? (
+            <WorkspaceView
+              key={active.id}
+              source={active}
+              onLog={log}
+              extraMarkers={activeChapters.map((c) => ({ id: c.id, time: c.start, label: c.title }))}
+              initialTime={playheadBySource[active.id] ?? 0}
+              onTime={(t) => setPlayheadBySource((prev) => ({ ...prev, [active.id]: t }))}
+            />
+          ) : <EmptyState onOpen={() => { void openMedia(); }} />)}
           {tool === 'chapters' && (
             <ChapterEditor
-              chapters={chapters}
+              chapters={activeChapters}
               duration={active?.metadata?.duration ?? null}
-              currentTime={0}
-              onChange={setChapters}
-              onSeek={() => setTool('inspector')}
+              currentTime={active ? (playheadBySource[active.id] ?? 0) : 0}
+              onChange={updateChapters}
+              onSeek={(t) => {
+                if (active) setPlayheadBySource((prev) => ({ ...prev, [active.id]: t }));
+                setTool('inspector');
+              }}
+              sourceName={active?.name ?? null}
             />
           )}
           {tool === 'header' && (
@@ -645,11 +862,11 @@ export default function App() {
           )}
           {tool === 'compressor' && (active ? (
             <Compressor source={active} extensions={extensions} onEnqueue={enqueueTranscode} onGotoMultiplexer={() => setTool('multiplexer')} log={log} />
-          ) : <EmptyState onOpen={() => fileInputRef.current?.click()} />)}
+          ) : <EmptyState onOpen={() => { void openMedia(); }} />)}
           {tool === 'splitjoin' && (
             <SplitJoin
               sources={sources}
-              chapters={chapters}
+              chapters={activeChapters}
               log={log}
               onSplit={(file, plan) => {
                 plan.configs.forEach((config, i) => {
@@ -665,20 +882,20 @@ export default function App() {
               }}
             />
           )}
-          {tool === 'processor' && (active ? (            <ProcessorView
+          {tool === 'processor' && (active ? (
+            <ProcessorView
               source={active}
-              projectId={projectIds.current.get(active.id) ?? null}
+              projectId={active.id}
               initial={pendingOp}
               history={history}
               onHistory={(h) => {
                 setHistory((prev) => [h, ...prev].slice(0, 50));
-                const pid = projectIds.current.get(active.id);
-                if (pid) appendHistory(pid, h).catch(() => undefined);
+                appendHistory(active.id, h).catch(() => undefined);
               }}
               onLog={log}
               lines={lines}
             />
-          ) : <EmptyState onOpen={() => fileInputRef.current?.click()} />)}
+          ) : <EmptyState onOpen={() => { void openMedia(); }} />)}
           {tool === 'analyzer' && (active?.metadata ? (
             <div className="grid gap-3 xl:grid-cols-2">
               <div className="space-y-3">
@@ -698,16 +915,44 @@ export default function App() {
                 <IntegrityPanel source={active} />
               </div>
             </div>
-          ) : <EmptyState onOpen={() => fileInputRef.current?.click()} />)}
+          ) : <EmptyState onOpen={() => { void openMedia(); }} />)}
           {tool === 'jobs' && (
             <JobsView jobs={jobs} onCancel={(id) => jobQueue.cancel(id)} onRetry={(id) => jobQueue.retry(id)} onRemove={(id) => jobQueue.remove(id)} onDuplicate={(id) => jobQueue.duplicate(id)} />
           )}
           {tool === 'codecs' && (
-            <CodecsView native={native} nativeLoading={nativeLoading} extensions={extensions} onLoadExtension={(id) => void loadExt(id)} serverUrl={import.meta.env.VITE_MEDIABUNNY_SERVER_URL ?? null} />
+            <CodecsView native={native} nativeLoading={nativeLoading} extensions={extensions} onLoadExtension={(id) => void loadExt(id)} />
           )}
         </main>
       </div>
     </div>
+  );
+}
+
+function FolderControls(props: {
+  name: string | null;
+  canPick: boolean;
+  onPick: () => void;
+  onClear: () => void;
+  error?: string | null;
+}) {
+  return (
+    <span className="mono flex items-center gap-1 text-[10px]">
+      <button
+        type="button"
+        disabled={!props.canPick}
+        title={props.error ?? (props.canPick ? undefined : 'This browser cannot pick a folder')}
+        onClick={props.onPick}
+        className="max-w-[140px] truncate rounded border border-zinc-700 px-2 py-0.5 text-zinc-300 hover:border-zinc-500 disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        {props.name ?? 'Set folder'}
+      </button>
+      {props.error && <span role="alert" className="max-w-[140px] truncate text-red-300">{props.error}</span>}
+      {props.name && (
+        <button type="button" onClick={props.onClear} className="rounded border border-zinc-800 px-1.5 py-0.5 text-zinc-500 hover:border-zinc-600 hover:text-zinc-300">
+          clear
+        </button>
+      )}
+    </span>
   );
 }
 
@@ -725,13 +970,20 @@ function Home(props: {
   jobs: JobRecord[];
   loading: boolean;
   error: string | null;
+  hasHandle: (id: string) => boolean;
+  onOpen: (dest: 'mux' | 'inspect') => void;
+  onReopen: (id: string) => void;
   onFiles: (f: File[], dest: 'mux' | 'inspect') => void;
   onSample: () => void;
   onNavigate: (t: ToolId) => void;
   fileInputRef: React.RefObject<HTMLInputElement | null>;
+  folderName: string | null;
+  canPickFolder: boolean;
+  onPickFolder: () => void;
+  onClearFolder: () => void;
+  folderError: string | null;
 }) {
   const dest = useRef<'mux' | 'inspect'>('mux');
-  const pick = (d: 'mux' | 'inspect') => { dest.current = d; props.fileInputRef.current?.click(); };
   return (
     <div className="mx-auto w-full max-w-5xl px-6 pb-12">
       <section className="relative flex flex-col justify-center overflow-hidden px-2 py-14 md:px-8 md:py-20">
@@ -745,22 +997,34 @@ function Home(props: {
             Inspect real containers, copy streams without re-encoding, and process everything locally.
           </p>
           <div className="mt-6 flex flex-wrap items-center gap-3">
-            <MovingBorderButton onClick={() => pick('mux')} disabled={props.loading}>
+            <MovingBorderButton onClick={() => { dest.current = 'mux'; props.onOpen('mux'); }} disabled={props.loading}>
               Open media
             </MovingBorderButton>
             <button onClick={props.onSample} disabled={props.loading} className="rounded-lg border border-zinc-700 bg-zinc-900/60 px-5 py-2.5 text-[13px] font-medium text-zinc-200 transition-colors hover:border-zinc-500 disabled:opacity-50">
               Try sample
             </button>
-            <button onClick={() => pick('inspect')} disabled={props.loading} className="rounded-lg border border-zinc-700 bg-zinc-900/60 px-5 py-2.5 text-[13px] font-medium text-zinc-200 transition-colors hover:border-zinc-500 disabled:opacity-50">
+            <button onClick={() => { dest.current = 'inspect'; props.onOpen('inspect'); }} disabled={props.loading} className="rounded-lg border border-zinc-700 bg-zinc-900/60 px-5 py-2.5 text-[13px] font-medium text-zinc-200 transition-colors hover:border-zinc-500 disabled:opacity-50">
               Inspect file
             </button>
           </div>
-          <p className="mono mt-4 flex items-center gap-2 text-[11px] text-emerald-300/90">
-            <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-400" /> LOCAL PROCESSING — no source media uploaded.
+          <p className="mono mt-4 flex flex-wrap items-center gap-2 text-[11px] text-emerald-300/90">
+            <span className="inline-flex items-center gap-2">
+              <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-400" /> LOCAL PROCESSING — no source media uploaded.
+            </span>
+            <FolderControls
+              name={props.folderName}
+              canPick={props.canPickFolder}
+              onPick={props.onPickFolder}
+              onClear={props.onClearFolder}
+              error={props.folderError}
+            />
           </p>
         </div>
       </section>
-      <input ref={props.fileInputRef} type="file" multiple accept="video/*,audio/*,.mkv,.mov,.srt,.vtt" className="hidden" onChange={(e) => { if (e.target.files) props.onFiles([...e.target.files], dest.current); e.target.value = ''; }} />
+      <input ref={props.fileInputRef} type="file" multiple accept="video/*,audio/*,.mkv,.mov,.srt,.vtt" className="hidden" onChange={(e) => {
+        if (e.target.files) props.onFiles([...e.target.files], dest.current);
+        e.target.value = '';
+      }} />
 
       {props.error && <div role="alert" className="mt-4 rounded-md border border-red-900 bg-red-950/50 p-3 text-[13px] text-red-200">{props.error}</div>}
 
@@ -776,11 +1040,22 @@ function Home(props: {
       <div className="mt-8 grid gap-3 md:grid-cols-2">
         <section className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-3" aria-label="Recent">
           <h2 className="mono text-[10px] tracking-[0.18em] text-zinc-500">RECENT PROJECTS</h2>
+          <p className="mono mt-1 text-[10px] leading-relaxed text-zinc-600">Click a name to reopen that file. A plain name has no saved handle, so open the file again. Media stays on this device.</p>
           {props.recent.length === 0 && <p className="mono mt-2 text-[11px] text-zinc-600">None yet.</p>}
           <ul className="mt-2 space-y-1">
             {props.recent.slice(0, 6).map((r) => (
               <li key={r.id} className="mono flex justify-between text-[11px] text-zinc-400">
-                <span className="truncate">{r.name}</span>
+                {props.hasHandle(r.id) ? (
+                  <button
+                    type="button"
+                    onClick={() => props.onReopen(r.id)}
+                    className="truncate text-left text-zinc-300 hover:text-zinc-100"
+                  >
+                    {r.name}
+                  </button>
+                ) : (
+                  <span className="truncate">{r.name}</span>
+                )}
                 <span className="shrink-0 text-zinc-600">{formatBytes(r.size)}</span>
               </li>
             ))}

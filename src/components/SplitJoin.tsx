@@ -292,7 +292,7 @@ function Joiner(props: { sources: SourceFileEntry[]; log: (s: string) => void; o
 
         <section className="overflow-x-auto rounded-lg border border-zinc-800 bg-zinc-900/40 p-3" aria-label="Join compatibility">
           <h3 className="mono text-[10px] tracking-[0.18em] text-zinc-500">SOURCE CHECK (INFORMATIONAL — JOIN ALWAYS RE-ENCODES)</h3>
-          <table className="mono mt-1.5 w-full min-w-[520px] text-[11px]">
+          <table className="mono mt-1.5 w-full text-[11px]">
             <thead><tr className="text-left text-zinc-500">
               <th className="py-1 pr-2 font-normal">File</th><th className="py-1 pr-2 font-normal">Video</th>
               <th className="py-1 pr-2 font-normal">Audio</th><th className="py-1 font-normal">Duration</th>

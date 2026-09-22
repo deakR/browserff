@@ -140,6 +140,11 @@ export function tierToQuality(tier: QualityTier): number {
   return QUALITY_TIER_VALUE[tier];
 }
 
+export function previewEnd(duration: number | null): number {
+  if (duration != null && duration > 0) return Math.min(5, duration);
+  return 5;
+}
+
 export type PresetId = 'max-compat' | 'balanced' | 'small' | 'archive' | 'mobile';
 
 export interface CapsLike {

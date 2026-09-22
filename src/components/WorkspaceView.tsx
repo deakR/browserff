@@ -8,17 +8,34 @@ import { Preview, Timeline } from './Preview';
 import { ContactSheet, FrameInspector } from './Frames';
 
 /** Single-file inspector workspace: preview, timeline, frames, metadata tree. */
-export function WorkspaceView({ source, onLog, extraMarkers = [] }: { source: SourceFileEntry; onLog: (s: string) => void; extraMarkers?: Marker[] }) {
-  const [currentTime, setCurrentTime] = useState(0);
+export function WorkspaceView({
+  source,
+  onLog,
+  extraMarkers = [],
+  initialTime = 0,
+  onTime,
+}: {
+  source: SourceFileEntry;
+  onLog: (s: string) => void;
+  extraMarkers?: Marker[];
+  initialTime?: number;
+  onTime?: (t: number) => void;
+}) {
+  const [currentTime, setCurrentTime] = useState(initialTime);
   const [range, setRange] = useState<{ start: number | null; end: number | null }>({ start: null, end: null });
   const [markers, setMarkers] = useState<Marker[]>([]);
   const [thumbs, setThumbs] = useState<Array<{ t: number; url: string | null }>>([]);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const initialRef = useRef(initialTime);
   const meta = source.metadata;
   const dur = meta?.duration ?? null;
 
+  const setTime = (t: number) => {
+    setCurrentTime(t);
+    onTime?.(t);
+  };
+
   useEffect(() => {
-    setCurrentTime(0);
     setRange({ start: null, end: null });
     setMarkers([]);
     setThumbs([]);
@@ -49,21 +66,35 @@ export function WorkspaceView({ source, onLog, extraMarkers = [] }: { source: So
     return () => { cancelled = true; };
   }, [source.id, source.file, meta?.duration, meta?.videoTracks.length]);
 
+  useEffect(() => {
+    const el = videoRef.current;
+    if (!el) return;
+    const t = initialRef.current;
+    const seekWhenReady = () => {
+      try { el.currentTime = t; } catch { /* ignore */ }
+      setCurrentTime(t);
+    };
+    if (el.readyState >= 1) seekWhenReady();
+    else el.addEventListener('loadedmetadata', seekWhenReady, { once: true });
+    return () => el.removeEventListener('loadedmetadata', seekWhenReady);
+  }, [source.id, source.objectUrl]);
+
   const seek = (t: number) => {
     const el = videoRef.current;
     if (el) { try { el.currentTime = t; } catch { /* ignore */ } }
-    setCurrentTime(t);
+    setTime(t);
   };
 
   return (
     <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_340px]">
       <section className="space-y-3">
-        <Preview url={source.objectUrl} markers={[...markers, ...extraMarkers]} range={range} currentTime={currentTime} onTime={setCurrentTime} videoRef={videoRef} />
+        <Preview url={source.objectUrl} markers={[...markers, ...extraMarkers]} range={range} currentTime={currentTime} onTime={setTime} videoRef={videoRef} />
         <Timeline
           duration={dur}
           currentTime={currentTime}
           range={range}
-          markers={[...markers, ...extraMarkers]}
+          markers={markers}
+          pins={extraMarkers}
           thumbs={thumbs}
           onSeek={seek}
           onSetRange={setRange}

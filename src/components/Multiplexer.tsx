@@ -68,8 +68,40 @@ export function Multiplexer(props: {
         </section>
 
         <section className="overflow-x-auto rounded-lg border border-zinc-800 bg-zinc-900/40 p-3" aria-label="Track matrix">
-          <h3 className="mono text-[10px] tracking-[0.18em] text-zinc-500">TRACK MATRIX — DRAG TO REORDER OUTPUT</h3>
-          <table className="mono mt-2 w-full min-w-[760px] text-[11px]">
+          <h3 className="mono text-[10px] tracking-[0.18em] text-zinc-500"><span className="md:hidden">TRACK MATRIX</span><span className="hidden md:inline">TRACK MATRIX — DRAG TO REORDER OUTPUT</span></h3>
+          <ul className="mt-2 space-y-2 md:hidden">
+            {props.selections.map((s) => {
+              const src = props.sources.find((x) => x.id === s.sourceId);
+              const t = s.kind === 'video' ? src?.metadata?.videoTracks[s.trackIndex]
+                : s.kind === 'audio' ? src?.metadata?.audioTracks[s.trackIndex] : null;
+              const planned = props.plan.find((p) => p.key === s.key);
+              const verdict = !s.include ? 'dropped'
+                : planned?.verdict === 'copy' ? 'COPY'
+                : planned?.verdict === 'unsupported' ? 'BLOCKED'
+                : '…';
+              return (
+                <li
+                  key={s.key}
+                  onClick={() => props.onSelectTrack(s.key)}
+                  className={`rounded border border-zinc-800 bg-zinc-950/60 p-2.5 ${props.selectedKey === s.key ? 'border-sky-800' : ''} ${s.include ? '' : 'opacity-45'}`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="flex items-center gap-2 text-[12px] text-zinc-200" onClick={(e) => e.stopPropagation()}>
+                      <input type="checkbox" checked={s.include} onChange={() => props.onToggle(s.key)} aria-label={`Include ${s.kind} track`} />
+                      <span>{s.kind === 'subtitle' ? 'sub' : s.kind} · {src?.name ?? '?'}</span>
+                    </label>
+                    <span className={`mono text-[11px] ${verdict === 'COPY' ? 'text-emerald-400' : verdict === 'BLOCKED' ? 'text-red-300' : 'text-zinc-600'}`}>{verdict}</span>
+                  </div>
+                  <p className="mono mt-1 text-[10px] text-zinc-500">{codecOf(s, src, t)} · {s.nameOverride ?? t?.name ?? '—'}</p>
+                  <div className="mt-2 flex gap-1">
+                    <button className="rounded border border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-400" onClick={(e) => { e.stopPropagation(); props.onMove(s.key, -1); }} aria-label="Move up">↑</button>
+                    <button className="rounded border border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-400" onClick={(e) => { e.stopPropagation(); props.onMove(s.key, 1); }} aria-label="Move down">↓</button>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+          <table className="mono mt-2 hidden w-full min-w-[760px] text-[11px] md:table">
             <thead>
               <tr className="text-left text-zinc-500">
                 <th className="py-1 pr-2 font-normal">✓</th>

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { openInput } from '../lib/mediabunny/reader';
 import { grabCanvas, canvasToBlob, trackAt } from '../lib/mediabunny/frames';
-import { downloadBlob } from '../lib/mediabunny/exporter';
+import { saveOutput } from '../lib/folder';
 import { formatDuration } from '../lib/format';
 
 export function FrameInspector({ file, time }: { file: File; time: number }) {
@@ -38,7 +38,7 @@ export function FrameInspector({ file, time }: { file: File; time: number }) {
     if (!url) return;
     const res = await fetch(url);
     const blob = await res.blob();
-    downloadBlob(blob, `frame-${time.toFixed(3)}s.png`);
+    await saveOutput(blob, `frame-${time.toFixed(3)}s.png`);
   };
 
   return (

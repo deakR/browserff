@@ -1,12 +1,12 @@
 import type { JobRecord } from '../types';
-import { downloadBlob } from '../lib/mediabunny/exporter';
+import { saveOutput } from '../lib/folder';
 import { formatBytes } from '../lib/format';
 
 async function downloadJob(job: JobRecord): Promise<void> {
   if (!job.outputUrl || !job.outputName) return;
   const res = await fetch(job.outputUrl);
   const blob = await res.blob();
-  downloadBlob(blob, job.outputName);
+  await saveOutput(blob, job.outputName);
 }
 
 export function JobsView(props: { jobs: JobRecord[]; onCancel: (id: string) => void; onRetry: (id: string) => void; onRemove: (id: string) => void; onDuplicate: (id: string) => void }) {

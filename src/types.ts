@@ -154,6 +154,12 @@ export interface HistoryEntry {
   config: OperationConfig | null;
 }
 
+export interface Chapter {
+  id: string;
+  start: number;
+  title: string;
+}
+
 export interface ProjectRecord {
   id: string;
   name: string;
@@ -162,6 +168,7 @@ export interface ProjectRecord {
   duration: number | null;
   container: string | null;
   metadata: MediaMetadata | null;
+  chapters: Chapter[];
   updatedAt: number;
 }
 
@@ -221,12 +228,6 @@ export interface PlannedTrack extends MuxTrackSelection {
   codec: string | null;
   verdict: TrackVerdict;
   verdictReason: string;
-}
-
-export interface Chapter {
-  id: string;
-  start: number;
-  title: string;
 }
 
 export type JobStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';

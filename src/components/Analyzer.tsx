@@ -3,8 +3,8 @@ import type { MediaMetadata, OptimizationRecommendation, SourceFileEntry } from 
 import { analyzeSize, buildRecommendations } from '../lib/analyzer';
 import { compareHashes, sha256Hex } from '../lib/hash';
 import { mediaReport } from '../lib/report';
-import { downloadBlob } from '../lib/mediabunny/exporter';
-import { formatBitrate, formatBytes, formatDuration } from '../lib/format';
+import { saveOutput } from '../lib/folder';
+import { formatBitrate, formatBytes, formatDuration, outputFileName } from '../lib/format';
 
 export function Analyzer(props: { size: number; meta: MediaMetadata }) {
   const breakdown = useMemo(() => analyzeSize(props.size, props.meta), [props.size, props.meta]);
@@ -66,7 +66,7 @@ export function MediaReportPanel(props: { source: SourceFileEntry; onQueue?: () 
             {copied ? 'copied ✓' : 'copy'}
           </button>
           <button
-            onClick={() => downloadBlob(new Blob([report], { type: 'text/markdown' }), 'media-report.md')}
+            onClick={() => { void saveOutput(new Blob([report], { type: 'text/markdown' }), outputFileName(props.source.name, 'media-report.md')); }}
             className="mono rounded border border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-300 hover:border-zinc-500"
           >
             .md

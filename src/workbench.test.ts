@@ -1,11 +1,13 @@
 import { describe, expect, test } from 'bun:test';
 import { planMux } from './lib/mediabunny/muxer';
-import { estimateForConfig, isRemuxOnly, pipelineRows, planFromTargetSize, resolvePreset } from './lib/compress';
+import { estimateForConfig, isRemuxOnly, pipelineRows, planFromTargetSize, previewEnd, resolvePreset } from './lib/compress';
 import { countCues, detectSubtitleFormat, srtToVtt } from './lib/subtitles';
 import { compareHashes, sha256Hex } from './lib/hash';
 import { mediaReport } from './lib/report';
 import { joinCompatibility, segmentFileName, segmentsFromSize, segmentsFromTimestamps } from './lib/mediabunny/splitjoin';
 import { chaptersFromXml, chaptersToXml, sortChapters } from './lib/chapters';
+import { projectKey } from './lib/db';
+import { outputFileName } from './lib/format';
 import { containerSupportsCodec, extractionTargets, transcodeContainers } from './lib/codecs';
 import type { MediaMetadata, MuxTrackSelection, SourceFileEntry } from './types';
 
@@ -93,6 +95,14 @@ describe('codec-aware extraction targets', () => {
   test('unknown codec offers nothing instead of faking', () => {
     expect(extractionTargets('not-a-codec', 'audio').length).toBe(0);
     expect(extractionTargets(null, 'video').length).toBe(0);
+  });
+});
+
+describe('preview window', () => {
+  test('caps long media at 5s, short media at duration, null at 5', () => {
+    expect(previewEnd(30)).toBe(5);
+    expect(previewEnd(2)).toBe(2);
+    expect(previewEnd(null)).toBe(5);
   });
 });
 
@@ -260,5 +270,23 @@ describe('chapters', () => {
       { id: 'a', start: 1, title: 'A' },
     ]);
     expect(s[0].id).toBe('a');
+  });
+});
+
+describe('projectKey', () => {
+  test('matches for same name, size, lastModified; differs when size differs', () => {
+    const a = new File(['bytes'], 'clip.mp4', { lastModified: 1_700_000_000_000 });
+    const b = new File(['bytes'], 'clip.mp4', { lastModified: 1_700_000_000_000 });
+    const c = new File(['bytes!!'], 'clip.mp4', { lastModified: 1_700_000_000_000 });
+    expect(projectKey(a)).toBe(projectKey(b));
+    expect(projectKey(a) === projectKey(c)).toBe(false);
+  });
+});
+
+describe('outputFileName', () => {
+  test('prefixes the source stem so folder writes do not share one name', () => {
+    expect(outputFileName('clip.mp4', 'media-report.md')).toBe('clip-media-report.md');
+    expect(outputFileName('a/b.mkv', 'chapters.xml')).toBe('a_b-chapters.xml');
+    expect(outputFileName('', 'chapters.vtt')).toBe('output-chapters.vtt');
   });
 });

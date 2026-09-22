@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import type { OperationConfig } from '../types';
 import { ffmpegPreview } from '../lib/ffmpeg';
-import { downloadBlob, outputFilename } from '../lib/mediabunny/exporter';
+import { saveOutput } from '../lib/folder';
+import { outputFilename } from '../lib/mediabunny/exporter';
 import type { ProcessedOutput } from '../types';
 import { formatBytes } from '../lib/format';
 
@@ -147,7 +148,7 @@ export function Compare({ original, output, inputName }: { original: { size: num
         {ov ? `${ov.displayWidth ?? '?'}×${ov.displayHeight ?? '?'} · ${(ov.codec ?? '?').toUpperCase()} · ` : ''}{output.container.toUpperCase()} · {Math.round(output.durationMs)}ms encode
       </p>
       <div className="mt-2 flex gap-2">
-        <button className="rounded border border-zinc-700 px-3 py-1.5 text-[12px] hover:border-zinc-500" onClick={() => downloadBlob(output.blob, outputFilename(inputName, output.container, output.config.kind))}>Export</button>
+        <button className="rounded border border-zinc-700 px-3 py-1.5 text-[12px] hover:border-zinc-500" onClick={() => { void saveOutput(output.blob, outputFilename(inputName, output.container, output.config.kind)); }}>Export</button>
         <a className="rounded border border-zinc-700 px-3 py-1.5 text-[12px] text-zinc-200 hover:border-zinc-500" href={output.objectUrl} target="_blank" rel="noreferrer">Preview output</a>
       </div>
     </div>

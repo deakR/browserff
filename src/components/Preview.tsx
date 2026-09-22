@@ -38,6 +38,7 @@ export function Timeline(props: {
   currentTime: number;
   range: { start: number | null; end: number | null };
   markers: Marker[];
+  pins?: Marker[];
   thumbs: Array<{ t: number; url: string | null }>;
   onSeek: (t: number) => void;
   onSetRange: (r: { start: number | null; end: number | null }) => void;
@@ -47,11 +48,10 @@ export function Timeline(props: {
   const dur = props.duration && props.duration > 0 ? props.duration : 0;
   const barRef = useRef<HTMLDivElement>(null);
 
-  const seekFromEvent = (e: React.MouseEvent | React.KeyboardEvent) => {
+  const seekFromClientX = (clientX: number) => {
     if (!dur || !barRef.current) return;
     const rect = barRef.current.getBoundingClientRect();
-    const x = 'clientX' in e ? e.clientX : rect.left + (props.currentTime / dur) * rect.width;
-    const t = Math.min(dur, Math.max(0, ((x - rect.left) / rect.width) * dur));
+    const t = Math.min(dur, Math.max(0, ((clientX - rect.left) / rect.width) * dur));
     props.onSeek(t);
   };
 
@@ -73,8 +73,15 @@ export function Timeline(props: {
         aria-valuemax={Math.round(dur)}
         aria-valuenow={Math.round(props.currentTime)}
         tabIndex={0}
-        className="relative mt-2 h-16 cursor-pointer overflow-hidden rounded bg-zinc-950"
-        onClick={seekFromEvent}
+        className="relative mt-2 h-16 cursor-pointer overflow-hidden rounded bg-zinc-950 touch-none"
+        onPointerDown={(e) => {
+          e.currentTarget.setPointerCapture(e.pointerId);
+          seekFromClientX(e.clientX);
+        }}
+        onPointerMove={(e) => {
+          if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
+          seekFromClientX(e.clientX);
+        }}
         onKeyDown={(e) => {
           if (e.key === 'ArrowLeft') props.onSeek(Math.max(0, props.currentTime - 1));
           if (e.key === 'ArrowRight') props.onSeek(Math.min(dur, props.currentTime + 1));
@@ -99,7 +106,7 @@ export function Timeline(props: {
         {dur > 0 && (
           <div className="absolute top-0 h-full w-px bg-white" style={{ left: `${(props.currentTime / dur) * 100}%` }} />
         )}
-        {props.markers.map((m) => (
+        {[...props.markers, ...(props.pins ?? [])].map((m) => (
           <div key={m.id} className="absolute top-0 h-full w-px bg-amber-400" style={{ left: dur ? `${(m.time / dur) * 100}%` : '0%' }} title={m.label} />
         ))}
       </div>

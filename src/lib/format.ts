@@ -55,6 +55,11 @@ function gcd(a: number, b: number): number {
   return b === 0 ? a : gcd(b, a % b);
 }
 
+export function outputFileName(sourceName: string, leaf: string): string {
+  const base = sourceName.replace(/\.[^.]+$/, '').replace(/[/\\\0]/g, '_').trim() || 'output';
+  return `${base}-${leaf}`;
+}
+
 export function extensionOf(name: string): string {
   const i = name.lastIndexOf('.');
   return i >= 0 ? name.slice(i + 1).toLowerCase() : '';

@@ -17,7 +17,6 @@
     "@mediabunny/flac-encoder": "^1.56.2",
     "@mediabunny/mp3-encoder": "^1.56.2",
     "@mediabunny/prores": "^1.56.2",
-    "@supabase/supabase-js": "^2.45.0",
     "clsx": "^2.1.1",
     "idb": "^8.0.0",
     "mediabunny": "^1.56.2",
