@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { planMux } from './lib/mediabunny/muxer';
+import { planMux, remuxManualCopy } from './lib/mediabunny/muxer';
 import { estimateForConfig, isRemuxOnly, pipelineRows, planFromTargetSize, previewEnd, resolvePreset } from './lib/compress';
 import { countCues, detectSubtitleFormat, srtToVtt } from './lib/subtitles';
 import { compareHashes, sha256Hex } from './lib/hash';
@@ -288,5 +288,31 @@ describe('outputFileName', () => {
     expect(outputFileName('clip.mp4', 'media-report.md')).toBe('clip-media-report.md');
     expect(outputFileName('a/b.mkv', 'chapters.xml')).toBe('a_b-chapters.xml');
     expect(outputFileName('', 'chapters.vtt')).toBe('output-chapters.vtt');
+  });
+});
+
+describe('remux execution with subtitles', () => {
+  test('remuxManualCopy succeeds when including subtitle track without Output has not started error', async () => {
+    const srt = '1\n00:00:01,000 --> 00:00:03,000\nHello';
+    const tracks = [
+      { file: null, sourceName: 'test.srt', kind: 'subtitle' as const, trackIndex: 0, name: 'Subs', languageCode: 'eng', makeDefault: true, makeForced: false, subtitleText: srt },
+    ];
+    const h = remuxManualCopy(tracks, 'mkv', () => {});
+    const res = await h.promise;
+    expect(res.size).toBeGreaterThan(0);
+  });
+});
+
+describe('hash protection', () => {
+  test('sha256Hex rejects file exceeding 2GB safe in-memory limit', async () => {
+    const hugeBlob = { size: 3 * 1024 * 1024 * 1024 } as Blob;
+    let err: Error | null = null;
+    try {
+      await sha256Hex(hugeBlob);
+    } catch (e) {
+      err = e as Error;
+    }
+    expect(err).toBeDefined();
+    expect(err?.message.includes('File is too large')).toBe(true);
   });
 });

@@ -578,7 +578,7 @@ export default function App() {
       mode: 'single', file: active.file,
       videoIdx: (active.metadata?.videoTracks ?? []).map((t) => t.index),
       audioIdx: (active.metadata?.audioTracks ?? []).map((t) => t.index),
-      container: extensionOf(active.name) === 'webm' ? 'webm' : 'mkv',
+      container: (extensionOf(active.name) === 'webm' ? 'webm' : extensionOf(active.name) === 'mp4' ? 'mp4' : 'mkv') as MuxContainer,
       title: muxTitle.trim(), label: `Retitle ${active.name}`,
     };
     jobQueue.enqueue('remux', payload.label, `title → "${payload.title}" (streams copied)`, payload);

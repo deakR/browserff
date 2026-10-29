@@ -75,14 +75,26 @@ export function ChapterEditor(props: {
                 onClick={() => {
                   const i = sorted.findIndex((x) => x.id === c.id);
                   if (i <= 0) return;
-                  const rest = sorted.filter((x) => x.id !== c.id);
                   const prev = sorted[i - 1];
-                  const at = rest.findIndex((x) => x.id === prev.id);
-                  const next = [...rest];
-                  next.splice(at, 0, c);
-                  props.onChange(next.map((x, order) => ({ ...x, order } as Chapter)));
+                  props.onChange(props.chapters.map((x) => {
+                    if (x.id === c.id) return { ...x, start: prev.start };
+                    if (x.id === prev.id) return { ...x, start: c.start };
+                    return x;
+                  }));
                 }}
                 className="px-1 text-zinc-500 hover:text-zinc-200" aria-label="Move earlier">↑</button>
+              <button
+                onClick={() => {
+                  const i = sorted.findIndex((x) => x.id === c.id);
+                  if (i < 0 || i >= sorted.length - 1) return;
+                  const next = sorted[i + 1];
+                  props.onChange(props.chapters.map((x) => {
+                    if (x.id === c.id) return { ...x, start: next.start };
+                    if (x.id === next.id) return { ...x, start: c.start };
+                    return x;
+                  }));
+                }}
+                className="px-1 text-zinc-500 hover:text-zinc-200" aria-label="Move later">↓</button>
               <button onClick={() => props.onChange(props.chapters.filter((x) => x.id !== c.id))} className="px-1 text-zinc-500 hover:text-red-300" aria-label="Delete chapter">✕</button>
             </li>
           ))}

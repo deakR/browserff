@@ -186,7 +186,7 @@ export function remuxManualCopy(
     type Prepared =
       | { kind: 'video'; spec: ManualCopyTrack; input: import('mediabunny').Input; track: import('mediabunny').InputVideoTrack; source: EncodedVideoPacketSource }
       | { kind: 'audio'; spec: ManualCopyTrack; input: import('mediabunny').Input; track: import('mediabunny').InputAudioTrack; source: EncodedAudioPacketSource }
-      | { kind: 'subtitle'; spec: ManualCopyTrack };
+      | { kind: 'subtitle'; spec: ManualCopyTrack; source: TextSubtitleSource; vtt: string };
     const prepared: Prepared[] = [];
     try {
       // Pass 1: open inputs, create sources, register output tracks (defines output order).
@@ -207,8 +207,7 @@ export function remuxManualCopy(
               ...(spec.makeForced != null ? { forced: spec.makeForced } : {}),
             },
           });
-          prepared.push({ kind: 'subtitle', spec });
-          await source.add(vtt);
+          prepared.push({ kind: 'subtitle', spec, source, vtt });
           continue;
         }
         const input = await openInput(spec.file as File);
@@ -263,6 +262,7 @@ export function remuxManualCopy(
         if (cancelled) throw new Error('Remux cancelled');
         const p = prepared[i];
         if (p.kind === 'subtitle') {
+          await p.source.add(p.vtt);
           onProgress({ stage: 'mux', progress: (i + 1) / prepared.length, processedSeconds: null, elapsedMs: performance.now() - started, fps: null });
           continue;
         }

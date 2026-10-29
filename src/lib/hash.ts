@@ -1,6 +1,11 @@
 /** Streaming file integrity via WebCrypto. Never loads the whole file at once. */
 
+const MAX_DIGEST_BYTES = 2 * 1024 * 1024 * 1024 - 1024 * 1024;
+
 export async function sha256Hex(file: Blob, onProgress?: (p: number) => void): Promise<string> {
+  if (file.size > MAX_DIGEST_BYTES) {
+    throw new Error(`File is too large for in-memory hashing (${(file.size / (1024 * 1024 * 1024)).toFixed(1)} GB). Browser WebCrypto digest requires contiguous memory under 2 GB.`);
+  }
   const total = file.size || 1;
   const reader = file.stream().getReader();
   const chunks: Uint8Array[] = [];
