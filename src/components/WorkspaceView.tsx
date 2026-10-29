@@ -88,7 +88,7 @@ export function WorkspaceView({
   return (
     <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_340px]">
       <section className="space-y-3">
-        <Preview url={source.objectUrl} markers={[...markers, ...extraMarkers]} range={range} currentTime={currentTime} onTime={setTime} videoRef={videoRef} />
+        <Preview url={source.objectUrl} file={source.file} markers={[...markers, ...extraMarkers]} range={range} currentTime={currentTime} onTime={setTime} videoRef={videoRef} />
         <Timeline
           duration={dur}
           currentTime={currentTime}

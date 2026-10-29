@@ -303,16 +303,11 @@ describe('remux execution with subtitles', () => {
   });
 });
 
-describe('hash protection', () => {
-  test('sha256Hex rejects file exceeding 2GB safe in-memory limit', async () => {
-    const hugeBlob = { size: 3 * 1024 * 1024 * 1024 } as Blob;
-    let err: Error | null = null;
-    try {
-      await sha256Hex(hugeBlob);
-    } catch (e) {
-      err = e as Error;
-    }
-    expect(err).toBeDefined();
-    expect(err?.message.includes('File is too large')).toBe(true);
+describe('hash streaming', () => {
+  test('sha256Hex streams chunks and matches known test vectors', async () => {
+    const text = 'The quick brown fox jumps over the lazy dog';
+    const blob = new Blob([text]);
+    const hash = await sha256Hex(blob);
+    expect(hash).toBe('d7a8fbb307d7809469ca9abcb0082e4f8d5651e46d3cdb762d02d0bf37c9e592');
   });
 });

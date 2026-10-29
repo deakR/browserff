@@ -1,6 +1,8 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { Marker } from '../types';
 import { formatDuration } from '../lib/format';
+import { openInput } from '../lib/mediabunny/reader';
+import { canvasToBlob, grabCanvas, trackAt } from '../lib/mediabunny/frames';
 
 export function Preview(props: {
   url: string;
@@ -9,8 +11,18 @@ export function Preview(props: {
   currentTime: number;
   onTime: (t: number) => void;
   videoRef: React.RefObject<HTMLVideoElement | null>;
+  file?: File;
 }) {
-  const { videoRef } = props;
+  const { videoRef, file, currentTime } = props;
+  const [videoError, setVideoError] = useState(false);
+  const [canvasUrl, setCanvasUrl] = useState<string | null>(null);
+  const [decoding, setDecoding] = useState(false);
+
+  useEffect(() => {
+    setVideoError(false);
+    setCanvasUrl(null);
+  }, [props.url]);
+
   useEffect(() => {
     const el = videoRef.current;
     if (!el) return;
@@ -19,16 +31,63 @@ export function Preview(props: {
     el.addEventListener('seeked', fn);
     return () => { el.removeEventListener('timeupdate', fn); el.removeEventListener('seeked', fn); };
   }, [videoRef, props]);
+
+  useEffect(() => {
+    if (!videoError || !file) return;
+    let cancelled = false;
+    setDecoding(true);
+    (async () => {
+      try {
+        const input = await openInput(file);
+        try {
+          const track = await trackAt(input);
+          if (!track || cancelled) return;
+          const got = await grabCanvas(track, currentTime, 854);
+          if (got && !cancelled) {
+            const blob = await canvasToBlob(got.canvas, 'image/jpeg', 0.85);
+            setCanvasUrl((prev) => {
+              if (prev) URL.revokeObjectURL(prev);
+              return URL.createObjectURL(blob);
+            });
+          }
+        } finally {
+          input.dispose();
+        }
+      } catch {
+        /* fallback best-effort */
+      } finally {
+        if (!cancelled) setDecoding(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [videoError, file, currentTime]);
+
   return (
-    <div className="overflow-hidden rounded-lg border border-zinc-800 bg-black">
-      <video
-        ref={videoRef}
-        src={props.url}
-        controls
-        playsInline
-        preload="metadata"
-        className="aspect-video w-full bg-black"
-      />
+    <div className="relative overflow-hidden rounded-lg border border-zinc-800 bg-black">
+      {videoError ? (
+        <div className="relative aspect-video w-full bg-zinc-950 flex flex-col items-center justify-center">
+          {canvasUrl ? (
+            <img src={canvasUrl} alt="Decoded preview frame" className="h-full w-full object-contain" />
+          ) : (
+            <p className="mono text-[12px] text-zinc-500">{decoding ? 'Decoding frame…' : 'Native video playback unsupported for this container (MKV)'}</p>
+          )}
+          <div className="absolute top-2 left-2 rounded bg-black/75 px-2 py-1 text-[11px] mono text-amber-300 border border-zinc-800">
+            Mediabunny Frame Fallback · {formatDuration(currentTime)}
+          </div>
+        </div>
+      ) : (
+        <video
+          ref={videoRef}
+          src={props.url}
+          controls
+          playsInline
+          preload="metadata"
+          onError={() => setVideoError(true)}
+          className="aspect-video w-full bg-black"
+        />
+      )}
     </div>
   );
 }

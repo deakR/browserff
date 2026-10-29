@@ -143,11 +143,24 @@ export function joinFiles(files: File[], cfg: JoinConfig, onProgress: (p: Proces
             onProgress({ stage: 'encode', progress: -1, processedSeconds: offset + sample.timestamp, elapsedMs: elapsed, fps: frames / (elapsed / 1000) });
           }
         }
+        let fileAudioSeconds = 0;
         if (atrack) {
           const asink = new AudioBufferSink(atrack);
           for await (const wrapped of asink.buffers()) {
             if (cancelled) throw new Error('Join cancelled');
             await audioSource.add(wrapped.buffer);
+            fileAudioSeconds += wrapped.buffer.duration;
+          }
+        }
+        const missing = (duration || 0) - fileAudioSeconds;
+        if (missing > 0.05 && typeof AudioContext !== 'undefined') {
+          const sampleRate = 48000;
+          const framesToPad = Math.round(missing * sampleRate);
+          if (framesToPad > 0) {
+            const actx = new AudioContext();
+            const silent = actx.createBuffer(2, framesToPad, sampleRate);
+            await audioSource.add(silent);
+            void actx.close();
           }
         }
         offset += duration || 0;
